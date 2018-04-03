@@ -1,0 +1,320 @@
+插入过程
+CREATE OR REPLACE PROCEDURE P_INSERT_LOG(
+   ACCT_MONTH#  VARCHAR2,
+   PKG_NAME#   VARCHAR2,
+   PROCNAME#    VARCHAR2,
+   PROV_ID#      VARCHAR2,
+   STARTDATE#   Date,
+   TAB_NAME      Varchar2 Default Null
+   ) IS
+  /*-------------------------------------------------------------------------------------------
+     过 程 名 : 生成存储过程日志信息
+     生成时间 ：20130124
+     编 写 人 ：
+     生成周期 ：
+     执行时间 : ( 分钟)
+     使用参数 ：
+     修改记录 :
+  -----------------------------------------------------------------------------------------------*/
+   V_TAB_NAME Varchar2(60);
+BEGIN
+
+  --日志部分, 把重复执行的过程的日志记录到日志历史表中
+  INSERT INTO ODS_EXECUTE_LOG_HIS
+      SELECT A.*, SYSDATE FROM ODS_EXECUTE_LOG A
+      WHERE ACCT_MONTH = ACCT_MONTH# --AND PKG_NAME=upper(PKG_NAME#)
+          AND PROCNAME = upper(PROCNAME#)  AND PROV_ID=PROV_ID# ;
+
+  DELETE ODS_EXECUTE_LOG
+   WHERE ACCT_MONTH = ACCT_MONTH# AND PKG_NAME=upper(PKG_NAME#)
+     AND PROCNAME = upper(PROCNAME#)  AND PROV_ID=PROV_ID#  ;
+
+  V_TAB_NAME := upper(NVL(TAB_NAME, SUBSTR(PROCNAME#,3)));
+
+  INSERT INTO ODS_EXECUTE_LOG
+    (ACCT_MONTH, PKG_NAME, PROCNAME, PROV_ID,  STARTDATE ,NOTE, TABLE_NAME)
+  VALUES
+    (ACCT_MONTH#, upper(PKG_NAME#), upper(PROCNAME#), PROV_ID#, STARTDATE# ,'开始', V_TAB_NAME);
+  COMMIT;
+
+END P_INSERT_LOG;
+更新过程
+CREATE OR REPLACE PROCEDURE P_UPDATE_LOG(ACCT_MONTH#    VARCHAR2,
+                                         PKGNAME#       VARCHAR2,
+                                         PROCNAME#      VARCHAR2,
+                                         PROV_ID#       VARCHAR2,
+                                         NOTE#          VARCHAR2,
+                                         RESULT#        VARCHAR2,
+                                         ENDDATE#       DATE,
+                                         ROWLINE#       Number)
+IS
+  /*-------------------------------------------------------------------------------------------
+     过 程 名 : 生成更新日志信息
+     生成时间 ：20130124
+     编 写 人 ：
+     生成周期 ：
+     执行时间 : (分钟)
+     使用参数 ：日期
+  -----------------------------------------------------------------------------------------------*/
+BEGIN
+  IF RESULT# = 'SUCCESS' AND ROWLINE# <= 0 THEN 
+
+  UPDATE ODS_EXECUTE_LOG
+     SET ENDDATE  = ENDDATE#,
+         RESULT   = 'NODATA',
+         DURATION = (ENDDATE# - STARTDATE) * 24 * 3600,
+         NOTE     = NOTE#,
+         ROW_COUNT = ROWLINE#
+   WHERE ACCT_MONTH = ACCT_MONTH#
+     AND PKG_NAME = PKGNAME#
+     AND PROCNAME = PROCNAME#
+     AND PROV_ID = PROV_ID# ;
+  
+  ELSE 
+    
+    UPDATE ODS_EXECUTE_LOG
+     SET ENDDATE  = ENDDATE#,
+         RESULT   = RESULT#,
+         DURATION = (ENDDATE# - STARTDATE) * 24 * 3600,
+         NOTE     = NOTE#,
+         ROW_COUNT = ROWLINE#
+   WHERE ACCT_MONTH = ACCT_MONTH#
+     AND PKG_NAME = PKGNAME#
+     AND PROCNAME = PROCNAME#
+     AND PROV_ID = PROV_ID# ;
+    
+  END IF;
+  COMMIT;
+
+END;
+参考过程
+CREATE OR REPLACE PROCEDURE P_TERM_DX_1202_TERM_ANA_S2(V_MONTH   IN VARCHAR2,
+                                              V_PROV    IN VARCHAR2,
+                                              V_RETCODE OUT VARCHAR2,
+                                              V_RETINFO OUT VARCHAR2) AS
+  /*@
+  ****************************************************************
+  *名称 --%@NAME:表2--不同终端用户出账收入和流量使用情况
+  *功能描述 --%@COMMENT:
+  *执行周期 --%@PERIOD:月
+  *参数 --%@PARAM:V_RETCODE  过程运行结束成功与否标志
+  *参数 --%@PARAM:V_RETINFO  过程运行结束成功与否描述
+  * 创建人 --%@CREATOR:代夏
+  *创建时间 --%@CREATED_TIME:2014-12-02
+  * 备注 --%@REMARK:
+  *修改记录 --%@MODIFY: 
+  ******************************************************************
+  */
+  V_PKG      VARCHAR2(40);
+  V_PROCNAME VARCHAR2(40);
+  V_TAB      VARCHAR2(40);
+  V_ROWLINE  NUMBER := 0;
+  V_SQL      LONG;
+BEGIN
+  --变量初始化赋值
+  V_PKG      := 'P_ANA';
+  V_PROCNAME := 'P_TERM_DX_1202_TERM_ANA_S2'; --过程名
+  V_TAB      := 'TERM_DX_1202_TERM_ANA_S2'; --表名
+
+  P_INSERT_LOG(V_MONTH, V_PKG, V_PROCNAME, V_PROV, SYSDATE, V_TAB);
+
+DELETE TERM_DX_1202_TERM_ANA_S2
+ WHERE MONTH_ID = V_MONTH
+   AND PROV_ID  = V_PROV;
+COMMIT;
+--3G
+V_SQL := 'INSERT INTO TERM_DX_1202_TERM_ANA_S2
+SELECT /*+PARALLEL(A,2)(B,2)(C,2)(D,2)*/
+ '''||V_MONTH||''',
+ '''||V_PROV||''',
+ CASE
+   WHEN A.IS_CARD = ''0'' THEN
+    ''3G手机''
+   WHEN A.IS_CARD = ''2'' THEN
+    ''2/3G融合''
+ END SERVICE_TYPE,
+  DECODE(NVL(B.TERM_TYPE, ''00''),
+        ''4G'',
+        ''4G终端'',
+        ''3G'',
+        ''3G终端'',
+        ''2G'',
+        ''2G终端'',
+        ''未知类型'') TERM_TYPE,
+ DECODE(NVL(A.USER_ACT_TYPE, ''99''),
+        ''01'',
+        ''存费送机'',
+        ''02'',
+        ''购机送费'',
+        ''03'',
+        ''存费送费'',
+        ''06'',
+        ''存费送业务'',
+        ''07'',
+        ''存费送业务'',
+        ''08'',
+        ''存费送业务'',
+        ''单卡'') ACTIVITY_TYPE,
+ CASE
+   WHEN E.PRODUCT_BASE_CLASS IN (''A'', ''B'', ''C'') THEN
+    E.PRODUCT_BASE_CLASS || E.MON_FEE
+   WHEN E.PRODUCT_BASE_CLASS = ''I'' THEN
+    ''iPhone'' || E.MON_FEE
+   WHEN E.PRODUCT_CLASSIFY_VALUE = ''020180'' THEN
+    E.PRODUCT_CLASS_DESC
+   WHEN E.PRODUCT_CLASSIFY_VALUE = ''020170'' THEN
+    ''20元预付费套餐''
+   WHEN E.PRODUCT_CLASSIFY_VALUE = ''020001'' THEN
+    ''标准资费''
+   ELSE
+    ''其他''
+ END PRODDUCT_CLASS,
+CASE
+   WHEN NVL(C.TOTAL_FLUX, 0) = 0 THEN
+    ''01''
+   WHEN NVL(C.TOTAL_FLUX, 0) > 0 AND NVL(C.TOTAL_FLUX, 0) <= 50 THEN
+    ''02''
+   WHEN NVL(C.TOTAL_FLUX, 0) <= 100 THEN
+    ''03''
+   WHEN NVL(C.TOTAL_FLUX, 0) <= 300 THEN
+    ''04''
+   WHEN NVL(C.TOTAL_FLUX, 0) <= 500 THEN
+    ''05''
+   WHEN NVL(C.TOTAL_FLUX, 0) <= 1024 THEN
+    ''06''
+   WHEN NVL(C.TOTAL_FLUX, 0) > 1024 THEN
+    ''07''
+   ELSE
+    ''08''
+ END FLUX_FD,
+ COUNT(A.USER_ID) USER_NUM,
+ SUM(NVL(D.TOTAL_FEE, 0)) TOTAL_FEE,
+ SUM(NVL(C.TOTAL_FLUX, 0)) TOTAL_FLUX
+  FROM (SELECT T.USER_ID, T.USER_ACT_TYPE, T.IS_CARD, T.PRODUCT_MODE
+          FROM ZBA_DWA.DWA_V_M_CUS_3G_USER_INFO_'||V_PROV||' T
+         WHERE MONTH_ID = '''||V_MONTH||'''
+           AND IS_THIS_ACCT = ''1''
+           AND IS_STAT = ''1''
+           AND IS_CARD = ''0'') A,
+       (SELECT T1.USER_ID, T1.ONEIN1MON_TERM_TYPE_4G TERM_TYPE
+          FROM ZBA_DWA.DWA_V_M_CUS_MB_SI_IMEI_IF_'||V_PROV||' T1
+         WHERE MONTH_ID = '''||V_MONTH||'''
+           AND IS_RECOGNIZABLE_TERM = ''1'') B,
+       (SELECT SUBS_INSTANCE_ID USER_ID, NVL(TOTAL_FLUX, 0) TOTAL_FLUX
+          FROM ZBA_DWA.DWA_V_M_CUS_3G_SING_FLUX_'||V_PROV||' T
+         WHERE MONTH_ID = '''||V_MONTH||''') C,
+       (SELECT USER_ID, NVL(TOTAL_FEE, 0) TOTAL_FEE
+          FROM ZBA_DWA.DWA_V_M_CUS_MB_RH_SCHARGE_'||V_PROV||' T
+         WHERE MONTH_ID = '''||V_MONTH||''') D,
+       (SELECT H.PRODUCT_CLASS,
+               J.PRODUCT_CLASS_DESC,
+               J.PRODUCT_BASE_CLASS,
+               R.MON_FEE,
+               R.PRODUCT_CLASS RATE_CLASS,
+               R.CALL_DURA,
+               R.FLUX_M,
+               J.PRODUCT_CLASSIFY_VALUE
+          FROM (SELECT *
+                  FROM ZB_DIM.DIM_PRODUCT_CLASS
+                 WHERE SERVICE_TYPE = ''30AAAAAA''
+                   AND IS_CARD = ''0'') H,
+               (SELECT *
+                  FROM ZB_DIM.DIM_PRODUCT_CLASS
+                 WHERE SERVICE_TYPE = ''30AAAAAA''
+                   AND IS_CARD = ''0'') J,
+               ZB_DIM.DIM_PRODUCT_RATE R
+         WHERE H.PRODUCT_CLASSIFY_VALUE = J.PRODUCT_CLASS(+)
+           AND J.PRODUCT_CLASSIFY_VALUE = ''02'' || R.PRODUCT_CLASS(+)) E
+ WHERE A.USER_ID = B.USER_ID(+)
+   AND A.USER_ID = C.USER_ID(+)
+   AND A.USER_ID = D.USER_ID(+)
+   AND A.PRODUCT_MODE = E.PRODUCT_CLASS(+)
+ GROUP BY CASE
+            WHEN A.IS_CARD = ''0'' THEN
+             ''3G手机''
+            WHEN A.IS_CARD = ''2'' THEN
+             ''2/3G融合''
+          END,
+          DECODE(NVL(A.USER_ACT_TYPE, ''99''),
+                 ''01'',
+                 ''存费送机'',
+                 ''02'',
+                 ''购机送费'',
+                 ''03'',
+                 ''存费送费'',
+                 ''06'',
+                 ''存费送业务'',
+                 ''07'',
+                 ''存费送业务'',
+                 ''08'',
+                 ''存费送业务'',
+                 ''单卡''),
+          DECODE(NVL(B.TERM_TYPE, ''00''),
+                 ''4G'',
+                 ''4G终端'',
+                 ''3G'',
+                 ''3G终端'',
+                 ''2G'',
+                 ''2G终端'',
+                 ''未知类型''),
+          CASE
+            WHEN NVL(C.TOTAL_FLUX, 0) = 0 THEN
+             ''01''
+            WHEN NVL(C.TOTAL_FLUX, 0) > 0 AND NVL(C.TOTAL_FLUX, 0) <= 50 THEN
+             ''02''
+            WHEN NVL(C.TOTAL_FLUX, 0) <= 100 THEN
+             ''03''
+            WHEN NVL(C.TOTAL_FLUX, 0) <= 300 THEN
+             ''04''
+            WHEN NVL(C.TOTAL_FLUX, 0) <= 500 THEN
+             ''05''
+            WHEN NVL(C.TOTAL_FLUX, 0) <= 1024 THEN
+             ''06''
+            WHEN NVL(C.TOTAL_FLUX, 0) > 1024 THEN
+             ''07''
+            ELSE
+             ''08''
+          END,
+          CASE
+            WHEN E.PRODUCT_BASE_CLASS IN (''A'', ''B'', ''C'') THEN
+             E.PRODUCT_BASE_CLASS || E.MON_FEE
+            WHEN E.PRODUCT_BASE_CLASS = ''I'' THEN
+             ''iPhone'' || E.MON_FEE
+            WHEN E.PRODUCT_CLASSIFY_VALUE = ''020180'' THEN
+             E.PRODUCT_CLASS_DESC
+            WHEN E.PRODUCT_CLASSIFY_VALUE = ''020170'' THEN
+             ''20元预付费套餐''
+            WHEN E.PRODUCT_CLASSIFY_VALUE = ''020001'' THEN
+             ''标准资费''
+            ELSE
+             ''其他''
+          END
+';
+  EXECUTE IMMEDIATE V_SQL;
+ V_ROWLINE := SQL%ROWCOUNT;
+  COMMIT;
+   
+  V_RETCODE := 'SUCCESS';
+  V_RETINFO := '结束';
+
+  P_UPDATE_LOG(V_MONTH,
+               V_PKG,
+               V_PROCNAME,
+               V_PROV,
+               V_RETINFO,
+               V_RETCODE,
+               SYSDATE,
+               V_ROWLINE);
+EXCEPTION
+  WHEN OTHERS THEN
+    V_RETCODE := 'FAIL';
+    V_RETINFO := SQLERRM;
+    P_UPDATE_LOG(V_MONTH,
+                 V_PKG,
+                 V_PROCNAME,
+                 V_PROV,
+                 V_RETINFO,
+                 V_RETCODE,
+                 SYSDATE,
+                 V_ROWLINE);
+END;
